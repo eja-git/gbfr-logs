@@ -5,10 +5,10 @@ injected into the game process and consumed by the GBFR Logs Awa Edition parser.
 Keep in mind that the serialization protocol is not defined here, only the
 serializable message types.
 
-The protocol between the hook and the parser is a simple named pipe, where the
-messages are encoded as "bincode" serialized bytes. This means that the hook and
-the parser must be compiled together to ensure that the serialization format is
-the same.
+The protocol between the hook and the parser is a simple loopback TCP socket,
+where the messages are encoded as "bincode" serialized bytes. This means that
+the hook and the parser must be compiled together to ensure that the
+serialization format is the same.
 
 The parser saves these messages in a different serialization format that provides
 forward-compatibility so that old logs can still be read by newer versions of the
@@ -29,7 +29,13 @@ pub use bincode;
 
 use serde::{Deserialize, Serialize};
 
-pub const PIPE_NAME: &str = r"\\.\pipe\gbfr-logs";
+/// Loopback TCP address used for the hook <-> parser transport.
+///
+/// A plain TCP socket (rather than a Windows named pipe) is used so that the
+/// hook can run inside Wine/Proton while the parser runs as a native Linux
+/// process outside of it: Wine bridges loopback TCP to the host's real
+/// network stack, but does not expose its named pipes outside the wineserver.
+pub const SOCKET_ADDR: &str = "127.0.0.1:31337";
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Actor {

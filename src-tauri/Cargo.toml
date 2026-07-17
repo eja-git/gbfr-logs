@@ -14,7 +14,6 @@ tauri-build = { version = "1.5", features = [] }
 anyhow = "1.0"
 dll-syringe = "0.15.2"
 futures = "0.3"
-interprocess = { version = "^2.0", features = ["tokio"] }
 protocol = { path = "../protocol" }
 sea-query = { version = "0"}
 sea-query-rusqlite = { version = "0", features = ["with-chrono"] }

@@ -20,7 +20,6 @@ anyhow = "1.0"
 ctor = "0.2.6"
 dirs = "5.0"
 fern = { version = "0.6" }
-interprocess = { version = "^2.0", features = ["tokio"] }
 log = "0.4"
 pelite = "0.10.0"
 retour = { version = "0.3.1", features = ["static-detour"] }

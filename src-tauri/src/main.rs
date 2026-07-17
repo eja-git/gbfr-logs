@@ -12,7 +12,6 @@ use std::{
 use anyhow::Context;
 use db::logs::LogEntry;
 use dll_syringe::{process::OwnedProcess, Syringe};
-use interprocess::os::windows::named_pipe::tokio::RecvPipeStream;
 use log::{info, LevelFilter};
 use parser::{
     constants::{CharacterType, EnemyType},
@@ -27,6 +26,7 @@ use tauri::{
 };
 use tauri_plugin_log::LogTarget;
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
+use tokio::net::TcpStream;
 use tokio_stream::StreamExt;
 use tokio_util::codec::FramedRead;
 
@@ -452,7 +452,7 @@ fn connect_and_run_parser(app: AppHandle) {
 
     tauri::async_runtime::spawn(async move {
         loop {
-            match RecvPipeStream::connect_by_path(protocol::PIPE_NAME).await {
+            match TcpStream::connect(protocol::SOCKET_ADDR).await {
                 Ok(stream) => {
                     info!("Connected to game!");
 

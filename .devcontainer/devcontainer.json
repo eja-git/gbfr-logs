@@ -1,0 +1,29 @@
+{
+  "name": "gbfr-logs",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+  "workspaceFolder": "/workspace",
+
+  /* Rootless podman/docker remaps your host UID into the container's user
+     namespace; keep-id makes the container's "ubuntu" (uid 1000) line up
+     with your host user so bind-mounted files stay writable. */
+  "runArgs": ["--userns=keep-id"],
+
+  "containerEnv": {
+    "RUST_BACKTRACE": "1"
+  },
+
+  "postCreateCommand": "npm ci",
+
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash"
+      },
+      "extensions": ["rust-lang.rust-analyzer", "tamasfe.even-better-toml"]
+    }
+  }
+}

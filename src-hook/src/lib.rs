@@ -5,9 +5,8 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use futures::sink::SinkExt;
-use interprocess::os::windows::named_pipe::tokio::{PipeListenerOptionsExt, SendPipeStream};
-use interprocess::os::windows::named_pipe::{pipe_mode, PipeListenerOptions, PipeMode};
 use log::{info, warn};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 
 mod event;
@@ -18,7 +17,7 @@ use protocol::Message;
 use tokio_util::codec::{FramedWrite, LengthDelimitedCodec};
 
 async fn handle_client(
-    mut stream: FramedWrite<SendPipeStream<pipe_mode::Bytes>, LengthDelimitedCodec>,
+    mut stream: FramedWrite<TcpStream, LengthDelimitedCodec>,
     mut rx: event::Rx,
 ) -> Result<()> {
     while let Ok(msg) = rx.recv().await {
@@ -41,16 +40,11 @@ impl Server {
     }
 
     async fn run(&self) {
-        if let Ok(listener) = PipeListenerOptions::new()
-            .path(protocol::PIPE_NAME)
-            .mode(PipeMode::Bytes)
-            .accept_remote(false)
-            .create_tokio_send_only()
-        {
+        if let Ok(listener) = TcpListener::bind(protocol::SOCKET_ADDR).await {
             loop {
-                let read_pipe = listener.accept().await;
-                match read_pipe {
-                    Ok(stream) => {
+                let accepted = listener.accept().await;
+                match accepted {
+                    Ok((stream, _addr)) => {
                         let rx = self.tx.subscribe();
                         tokio::spawn(async move {
                             let encoder = LengthDelimitedCodec::new();
