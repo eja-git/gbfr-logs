@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Cross-compiles the hook DLL and the Tauri app for Windows from inside the
-# devcontainer. Mirrors the two cargo invocations from .github/workflows/ci.yaml,
-# but on native Windows CI both land in target/release/ for free because host ==
-# target; here we build for x86_64-pc-windows-gnu and copy hook.dll into the path
-# src-tauri/build.rs expects (../target/release/hook.dll) before the main build,
-# since that copy is what tauri_build's resource bundling relies on existing.
+# Cross-compiles the hook DLL, the Tauri app, and the injector for Windows from
+# inside the devcontainer. Mirrors the two cargo invocations from
+# .github/workflows/ci.yaml, but on native Windows CI both land in
+# target/release/ for free because host == target; here we build for
+# x86_64-pc-windows-gnu and copy hook.dll into the path src-tauri/build.rs
+# expects (../target/release/hook.dll) before the main build, since that copy
+# is what tauri_build's resource bundling relies on existing. The final
+# workspace-wide build also produces target/$TARGET/release/injector.exe.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
