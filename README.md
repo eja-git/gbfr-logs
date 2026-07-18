@@ -1,10 +1,10 @@
-# GBFR Logs Awa Edition
+# GBFR Logs for Linux
 
 [![GitHub Release](https://img.shields.io/github/v/release/onelittlechildawa/gbfr-logs)](https://github.com/onelittlechildawa/gbfr-logs/releases)
 
-Community-maintained fork by [onelittlechildawa](https://github.com/onelittlechildawa) for Granblue Fantasy: Relink 2.0.2.
+Community-maintained fork by [onelittlechildawa](https://github.com/onelittlechildawa) for Granblue Fantasy: Relink 2.0.2, with added support for running under Wine/Proton on Linux.
 
-This edition is based on [false-spring/gbfr-logs](https://github.com/false-spring/gbfr-logs) and retains its MIT license and upstream credits. The Awa Edition adds game 2.0.2 compatibility, the six new playable characters, separate same-character multiplayer tracking, automatic battle-log saving, a repaired battle-end hook, and updated skill-name tracking.
+This edition is based on [false-spring/gbfr-logs](https://github.com/false-spring/gbfr-logs) and retains its MIT license and upstream credits. The GUI (still branded "GBFR Logs Awa Edition") adds game 2.0.2 compatibility, the six new playable characters, separate same-character multiplayer tracking, automatic battle-log saving, a repaired battle-end hook, and updated skill-name tracking. This fork additionally adds a TCP-based hook transport and a native Linux TUI live DPS overlay (`tui/`) for Linux/Wine users who don't want to run the Windows GUI under Wine.
 
 ## How to install
 
@@ -108,9 +108,12 @@ Create a [new GitHub issue](https://github.com/onelittlechildawa/gbfr-logs/issue
 This project is split up into a few subprojects:
 
 - `src-hook/` - Library that is injected into the game that broadcasts essential damage events.
-- `src-tauri/` - The Tauri Rust backend that communicates with the hooked process and does parsing.
-- `protocol/` - Defines the message protocol used by hook + back-end.
-- `src/` - The JS front-end used by the Tauri web app
+- `protocol/` - Defines the message protocol used by hook + back-end (a TCP socket, so the hook can run under Wine while a Linux-native process talks to it directly).
+- `engine/` - Combat-log parsing/aggregation logic, shared by both frontends below and free of any GUI framework dependency.
+- `src-tauri/` - The Tauri Rust backend (Windows GUI) that communicates with the hooked process and does parsing.
+- `src/` - The JS front-end used by the Tauri web app.
+- `injector/` - Minimal Windows binary that finds the game process and injects `hook.dll`, with no GUI dependency at all. Meant to run under Wine via `protontricks-launch` for the Linux TUI below.
+- `tui/` - Native Linux terminal UI: a live DPS overlay that talks to `hook.dll` directly over TCP, for Linux/Wine users who'd rather not run the Windows GUI under Wine.
 
 ## Credits
 
