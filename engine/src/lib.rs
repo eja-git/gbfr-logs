@@ -1,4 +1,5 @@
 pub mod constants;
+pub mod sink;
 pub mod v0;
 
 #[allow(dead_code)]

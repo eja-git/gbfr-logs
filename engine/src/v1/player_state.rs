@@ -1,7 +1,7 @@
 use protocol::{ActionType, DamageEvent};
 use serde::{Deserialize, Serialize};
 
-use crate::parser::constants::{CharacterType, FerrySkillId};
+use crate::constants::{CharacterType, FerrySkillId};
 
 use super::{skill_state::SkillState, AdjustedDamageInstance};
 
@@ -119,7 +119,7 @@ impl PlayerState {
 
 #[cfg(test)]
 mod tests {
-    use crate::parser::v1::{PlayerData, PlayerStats};
+    use crate::v1::{PlayerData, PlayerStats};
 
     use super::*;
 

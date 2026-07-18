@@ -4,7 +4,7 @@ use anyhow::Result;
 use protocol::DamageEvent;
 use serde::{Deserialize, Serialize};
 
-use crate::parser::constants::CharacterType;
+use crate::constants::CharacterType;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]

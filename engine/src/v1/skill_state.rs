@@ -1,7 +1,7 @@
 use protocol::{ActionType, DamageDetails, DamageModifierKind};
 use serde::{Deserialize, Serialize};
 
-use crate::parser::constants::CharacterType;
+use crate::constants::CharacterType;
 
 use super::AdjustedDamageInstance;
 

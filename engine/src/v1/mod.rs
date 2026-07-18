@@ -8,7 +8,8 @@ use protocol::{
 };
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, Window};
+
+use crate::sink::{EncounterSink, EngineEvent};
 
 use super::{
     constants::{CharacterType, EnemyType},
@@ -186,17 +187,17 @@ struct Sigil {
 #[serde(rename_all = "camelCase")]
 pub struct PlayerData {
     /// Actor index for this player
-    actor_index: u32,
+    pub actor_index: u32,
     /// Display name for this player, empty if its an NPC
-    display_name: String,
+    pub display_name: String,
     /// Character name for this player if it's an NPC, otherwise it is the same as display_name
-    character_name: String,
+    pub character_name: String,
     /// Character type for this player
-    character_type: CharacterType,
+    pub character_type: CharacterType,
     /// Sigils that this player has equipped
     sigils: Vec<Sigil>,
     /// Whether this player was an online player or not
-    is_online: bool,
+    pub is_online: bool,
     /// Weapon info for this player
     weapon_info: Option<WeaponInfo>,
     /// Overmastery info for this player
@@ -410,7 +411,7 @@ impl DerivedEncounterState {
 }
 
 /// The parser for the encounter.
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default)]
 pub struct Parser {
     /// Encounter that will be saved into the database, contains all the state needed to reparse
     pub encounter: Encounter,
@@ -419,25 +420,32 @@ pub struct Parser {
     /// Status of the parser
     status: ParserStatus,
 
-    /// The window handle for the parser, used to send messages to the front-end
+    /// Sink for pushing live updates to whatever frontend is attached (Tauri
+    /// window events for the GUI, a channel for the TUI). `None` runs headless.
     #[serde(skip)]
-    app: Option<AppHandle>,
+    sink: Option<Box<dyn EncounterSink>>,
 
-    /// The window handle for the parser, used to send messages to the front-end
-    #[serde(skip)]
-    window_handle: Option<Window>,
-
-    /// The database connection for the parser, used to save the encounter
+    /// The database connection for the parser, used to save the encounter.
+    /// `None` skips persistence entirely.
     #[serde(skip)]
     db: Option<Connection>,
 }
 
+impl std::fmt::Debug for Parser {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Parser")
+            .field("encounter", &self.encounter)
+            .field("derived_state", &self.derived_state)
+            .field("status", &self.status)
+            .finish()
+    }
+}
+
 impl Parser {
-    pub fn new(app: AppHandle, window: Window, db: Connection) -> Self {
+    pub fn new(sink: Option<Box<dyn EncounterSink>>, db: Option<Connection>) -> Self {
         Self {
-            app: Some(app),
-            db: Some(db),
-            window_handle: Some(window),
+            sink,
+            db,
             ..Default::default()
         }
     }
@@ -601,13 +609,13 @@ impl Parser {
             if self.has_damage() {
                 match self.save_encounter_to_db() {
                     Ok(id) => {
-                        if let Some(app) = &self.app {
-                            let _ = app.emit_all("encounter-saved", id);
+                        if let Some(sink) = &self.sink {
+                            sink.on_event(EngineEvent::EncounterSaved(id));
                         }
                     }
                     Err(e) => {
-                        if let Some(app) = &self.app {
-                            let _ = app.emit_all("encounter-saved-error", e.to_string());
+                        if let Some(sink) = &self.sink {
+                            sink.on_event(EngineEvent::EncounterSavedError(&e.to_string()));
                         }
                     }
                 }
@@ -619,8 +627,8 @@ impl Parser {
         self.encounter.quest_completed = false;
         self.encounter.reset_player_data();
 
-        if let Some(window) = &self.window_handle {
-            let _ = window.emit("on-area-enter", &self.derived_state);
+        if let Some(sink) = &self.sink {
+            sink.on_event(EngineEvent::OnAreaEnter(&self.derived_state));
         }
     }
 
@@ -635,20 +643,20 @@ impl Parser {
             if self.has_damage() {
                 match self.save_encounter_to_db() {
                     Ok(id) => {
-                        if let Some(window) = &self.window_handle {
-                            let _ = window.emit("encounter-saved", id);
+                        if let Some(sink) = &self.sink {
+                            sink.on_event(EngineEvent::EncounterSaved(id));
                         }
                     }
                     Err(e) => {
-                        if let Some(window) = &self.window_handle {
-                            let _ = window.emit("encounter-saved-error", e.to_string());
+                        if let Some(sink) = &self.sink {
+                            sink.on_event(EngineEvent::EncounterSavedError(&e.to_string()));
                         }
                     }
                 }
             }
 
-            if let Some(window) = &self.window_handle {
-                let _ = window.emit("encounter-update", &self.derived_state);
+            if let Some(sink) = &self.sink {
+                sink.on_event(EngineEvent::EncounterUpdate(&self.derived_state));
             }
         }
     }
@@ -683,8 +691,8 @@ impl Parser {
         self.derived_state
             .process_damage_event(now, &damage_instance);
 
-        if let Some(window) = &self.window_handle {
-            let _ = window.emit("encounter-update", &self.derived_state);
+        if let Some(sink) = &self.sink {
+            sink.on_event(EngineEvent::EncounterUpdate(&self.derived_state));
         }
     }
 
@@ -717,26 +725,16 @@ impl Parser {
 
         match self.save_encounter_to_db() {
             Ok(id) => {
-                if let Some(app) = &self.app {
-                    let _ = app.emit_all("encounter-saved", id);
-                } else if let Some(window) = &self.window_handle {
-                    let _ = window.emit("encounter-saved", id);
-                }
-
-                if let Some(window) = &self.window_handle {
-                    let _ = window.emit("encounter-update", &self.derived_state);
+                if let Some(sink) = &self.sink {
+                    sink.on_event(EngineEvent::EncounterSaved(id));
+                    sink.on_event(EngineEvent::EncounterUpdate(&self.derived_state));
                 }
                 true
             }
             Err(e) => {
-                if let Some(app) = &self.app {
-                    let _ = app.emit_all("encounter-saved-error", e.to_string());
-                } else if let Some(window) = &self.window_handle {
-                    let _ = window.emit("encounter-saved-error", e.to_string());
-                }
-
-                if let Some(window) = &self.window_handle {
-                    let _ = window.emit("encounter-update", &self.derived_state);
+                if let Some(sink) = &self.sink {
+                    sink.on_event(EngineEvent::EncounterSavedError(&e.to_string()));
+                    sink.on_event(EngineEvent::EncounterUpdate(&self.derived_state));
                 }
                 false
             }
@@ -870,8 +868,8 @@ impl Parser {
     }
 
     fn emit_party_update(&self) {
-        if let Some(window) = &self.window_handle {
-            let _ = window.emit("encounter-party-update", &self.encounter.player_data);
+        if let Some(sink) = &self.sink {
+            sink.on_event(EngineEvent::EncounterPartyUpdate(&self.encounter.player_data));
         }
     }
 
@@ -887,8 +885,8 @@ impl Parser {
             player.set_sba(event.sba_value as f64);
         }
 
-        if let Some(window) = &self.window_handle {
-            let _ = window.emit("encounter-update", &self.derived_state);
+        if let Some(sink) = &self.sink {
+            sink.on_event(EngineEvent::EncounterUpdate(&self.derived_state));
         }
     }
 
@@ -903,8 +901,8 @@ impl Parser {
             player.set_sba(800.0);
         }
 
-        if let Some(window) = &self.window_handle {
-            let _ = window.emit("encounter-update", &self.derived_state);
+        if let Some(sink) = &self.sink {
+            sink.on_event(EngineEvent::EncounterUpdate(&self.derived_state));
         }
     }
 
@@ -919,8 +917,8 @@ impl Parser {
             player.set_sba(0.0);
         }
 
-        if let Some(window) = &self.window_handle {
-            let _ = window.emit("encounter-update", &self.derived_state);
+        if let Some(sink) = &self.sink {
+            sink.on_event(EngineEvent::EncounterUpdate(&self.derived_state));
         }
     }
 
@@ -936,8 +934,8 @@ impl Parser {
             player.set_sba(0.0);
         }
 
-        if let Some(window) = &self.window_handle {
-            let _ = window.emit("encounter-update", &self.derived_state);
+        if let Some(sink) = &self.sink {
+            sink.on_event(EngineEvent::EncounterUpdate(&self.derived_state));
         }
     }
 

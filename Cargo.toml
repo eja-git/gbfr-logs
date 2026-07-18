@@ -2,7 +2,10 @@
 resolver = "2"
 members = [
   "src-hook",
-  "src-tauri"
+  "src-tauri",
+  "engine",
+  "injector",
+  "tui"
 ]
 
 [profile.release.package.hook]

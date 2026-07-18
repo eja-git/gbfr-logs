@@ -12,14 +12,15 @@ use std::{
 use anyhow::Context;
 use db::logs::LogEntry;
 use dll_syringe::{process::OwnedProcess, Syringe};
-use log::{info, LevelFilter};
-use parser::{
+use engine::{
     constants::{CharacterType, EnemyType},
     v1::{self, PlayerData},
 };
+use log::{info, LevelFilter};
 use protocol::Message;
 use rusqlite::params_from_iter;
 use serde::{Deserialize, Serialize};
+use sink::TauriSink;
 use tauri::{
     api::dialog::blocking::FileDialogBuilder, AppHandle, CustomMenuItem, LogicalSize, Manager,
     Size, State, SystemTray, SystemTrayEvent, SystemTrayMenu, SystemTrayMenuItem,
@@ -31,7 +32,7 @@ use tokio_stream::StreamExt;
 use tokio_util::codec::FramedRead;
 
 mod db;
-mod parser;
+mod sink;
 
 struct AlwaysOnTop(AtomicBool);
 struct ClickThrough(AtomicBool);
@@ -78,7 +79,7 @@ fn export_damage_log_to_file(id: u32, options: ParseOptions) -> Result<(), Strin
         .context("Failed to fetch log from database")
         .map_err(|e| e.to_string())?;
 
-    let parser = parser::deserialize_version(&blob, version).map_err(|e| e.to_string())?;
+    let parser = engine::deserialize_version(&blob, version).map_err(|e| e.to_string())?;
 
     let file = File::create(file_path).map_err(|e| e.to_string())?;
 
@@ -313,7 +314,7 @@ fn fetch_encounter_state(id: u64, options: ParseOptions) -> Result<EncounterStat
         .map_err(|e| e.to_string())?;
 
     // @TODO(false): If we deserialize from an older version, we should save it back into the DB as the newer format.
-    let mut parser = parser::deserialize_version(&blob, version).map_err(|e| e.to_string())?;
+    let mut parser = engine::deserialize_version(&blob, version).map_err(|e| e.to_string())?;
 
     parser.reparse_with_options(&options.targets);
 
@@ -444,11 +445,10 @@ async fn check_and_perform_hook(app: AppHandle) {
 
 // Connect to the game hook event channel and listen for damage events.
 fn connect_and_run_parser(app: AppHandle) {
-    let window = app.get_window("main").expect("Window not found");
     let logs_window = app.get_window("logs").expect("Logs window not found");
 
     let database = db::connect_to_db().expect("Could not connect to database");
-    let mut state = v1::Parser::new(app.clone(), window.clone(), database);
+    let mut state = v1::Parser::new(Some(Box::new(TauriSink::new(app.clone()))), Some(database));
 
     tauri::async_runtime::spawn(async move {
         loop {
