@@ -10,8 +10,8 @@ The upstream Windows GUI is a Tauri app that renders its overlay with the Micros
 
 - **`protocol/`** — the hook<->parser wire protocol now runs over a loopback TCP socket instead of a Windows named pipe, so a process outside Wine can talk to the in-game hook directly.
 - **`engine/`** — the combat-log parsing/aggregation logic, pulled out of the Tauri app into its own crate with no GUI framework dependency, so it can be reused by more than one frontend.
-- **`injector/`** — a minimal Windows binary (no Tauri/WebView2 anywhere in it) that just finds the game process and injects `hook.dll`. Runs under Wine via `protontricks-launch`.
-- **`tui/`** — a native Linux terminal UI: a live DPS overlay that connects to `hook.dll` directly over TCP and renders a damage/DPS table with `ratatui`. No Wine GUI involved on this side at all. It launches `injector.exe` for you via `protontricks-launch --appid <steam appid> <path to injector.exe>`.
+- **`injector/`** — a minimal Windows binary (no Tauri/WebView2 anywhere in it) that just finds the game process and injects `hook.dll`. Runs under Wine, either directly or via `protontricks-launch`.
+- **`tui/`** — a native Linux terminal UI: a live DPS overlay that connects to `hook.dll` directly over TCP and renders a damage/DPS table with `ratatui`. No Wine GUI involved on this side at all. It launches `injector.exe` for you on startup.
 
 The original Windows GUI (`src-tauri/` + `src/`) is unchanged and still works normally on native Windows.
 
@@ -30,8 +30,25 @@ The Linux-native `tui` binary builds normally with `cargo build --release -p tui
 ## Running
 
 1. Copy `gbfr-logs.exe`/`hook.dll`/`WebView2Loader.dll` or `injector.exe`/`hook.dll` (whichever frontend you're using) into one folder.
-2. Start the game.
-3. Run the TUI: `tui --appid <steam appid> --injector /path/to/injector.exe`.
+2. Start the game and get into a session (not just the title screen).
+3. Run the TUI, giving it the game's own wine binary and prefix so `injector.exe` attaches to the game's actual live wineserver session:
+
+   ```
+   pgrep -f granblue_fantasy_relink.exe
+   cat /proc/<pid>/environ | tr '\0' '\n' | grep STEAM_COMPAT
+
+   tui --injector /path/to/injector.exe \
+     --wine "<STEAM_COMPAT_TOOL_PATHS entry>/files/bin/wine" \
+     --wineprefix "<STEAM_COMPAT_DATA_PATH>/pfx"
+   ```
+
+   `--appid <steam appid>` is also accepted as a fallback, using
+   `protontricks-launch` instead — simpler, but on at least one Bazzite/CachyOS
+   setup this was observed to attach to a separate, unrelated wineserver
+   session rather than the game's live one (confirmed via `wine tasklist`
+   showing no game process, and a second `wineserver` process appearing).
+   If injection silently never finds the game process, switch to
+   `--wine`/`--wineprefix`.
 
 ## Credits
 
