@@ -6,7 +6,6 @@
 //! separate, unrelated wineserver session rather than the game's live one on
 //! at least Bazzite/CachyOS — see `spawn_injector_protontricks`'s doc comment).
 
-use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, Read, Write};
 use std::path::PathBuf;
@@ -19,10 +18,11 @@ use clap::Parser as ClapParser;
 use crossterm::event::{self, Event, KeyCode};
 use crossterm::execute;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use engine::constants::CharacterType;
 use engine::v1::Parser as EngineParser;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 use ratatui::Terminal;
 use tokio::net::TcpStream;
@@ -69,20 +69,12 @@ struct Args {
     appid: Option<String>,
 }
 
-const MAX_LOG_LINES: usize = 200;
 const LOG_FILE_NAME: &str = "tui.log";
 
-/// Log lines shown in the on-screen panel, mirrored to `tui.log` in the
-/// working directory. The on-screen panel is hard to copy text out of (it's
-/// drawn in an alternate screen buffer), so the file is the reliable way to
-/// get diagnostics out — `tail -f tui.log` in another terminal, or `cat` it
-/// after quitting.
-struct LogState {
-    lines: Mutex<VecDeque<String>>,
-    file: Mutex<Option<File>>,
-}
-
-type SharedLog = Arc<LogState>;
+/// Diagnostics (injector output, connection state) go to `tui.log` in the
+/// working directory rather than an on-screen panel — `tail -f tui.log` in
+/// another terminal if something needs debugging.
+type SharedLog = Arc<Mutex<Option<File>>>;
 
 fn open_log() -> SharedLog {
     let file = OpenOptions::new()
@@ -91,22 +83,11 @@ fn open_log() -> SharedLog {
         .open(LOG_FILE_NAME)
         .ok();
 
-    Arc::new(LogState {
-        lines: Mutex::new(VecDeque::new()),
-        file: Mutex::new(file),
-    })
+    Arc::new(Mutex::new(file))
 }
 
 fn push_log(log: &SharedLog, line: String) {
-    {
-        let mut lines = log.lines.lock().unwrap();
-        if lines.len() >= MAX_LOG_LINES {
-            lines.pop_front();
-        }
-        lines.push_back(line.clone());
-    }
-
-    if let Ok(mut file) = log.file.lock() {
+    if let Ok(mut file) = log.lock() {
         if let Some(file) = file.as_mut() {
             let _ = writeln!(file, "{line}");
             let _ = file.flush();
@@ -274,18 +255,16 @@ fn run_ui(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     parser: &Arc<Mutex<EngineParser>>,
     connected: &Arc<AtomicBool>,
-    log: &SharedLog,
 ) -> anyhow::Result<()> {
     loop {
         terminal.draw(|frame| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Min(3), Constraint::Length(8), Constraint::Length(1)])
+                .constraints([Constraint::Min(3), Constraint::Length(1)])
                 .split(frame.size());
 
             draw_meter(frame, chunks[0], parser);
-            draw_log(frame, chunks[1], log);
-            draw_status(frame, chunks[2], connected.load(Ordering::Relaxed));
+            draw_status(frame, chunks[1], connected.load(Ordering::Relaxed));
         })?;
 
         if event::poll(Duration::from_millis(250))? {
@@ -301,44 +280,27 @@ fn run_ui(
 fn draw_meter(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, parser: &Arc<Mutex<EngineParser>>) {
     let parser = parser.lock().unwrap();
 
-    // character_name is an internal field, not meant for display (matching
-    // src/pages/logs/View.tsx's formatPlayerDisplayName, which only ever
-    // shows displayName, falling back to character_type when it's empty —
-    // e.g. offline/solo play, where there's no online display name at all).
-    let names: std::collections::HashMap<u32, String> = parser
-        .encounter
-        .player_data
-        .iter()
-        .flatten()
-        .filter(|p| !p.display_name.is_empty())
-        .map(|p| (p.actor_index, p.display_name.clone()))
-        .collect();
-
     let mut players: Vec<_> = parser.derived_state.party.values().collect();
     players.sort_by(|a, b| b.total_damage.cmp(&a.total_damage));
 
     let rows = players.into_iter().map(|player| {
-        let character_name = player.character_type.friendly_name();
-        let name = names.get(&player.index).cloned().unwrap_or_else(|| character_name.clone());
-
         Row::new(vec![
-            Cell::from(name),
-            Cell::from(character_name),
+            Cell::from(player.character_type.friendly_name()),
             Cell::from(format!("{}", player.total_damage)),
             Cell::from(format!("{:.0}", player.dps)),
         ])
+        .style(Style::default().fg(character_color(&player.character_type)))
     });
 
-    let header = Row::new(vec!["Player", "Character", "Damage", "DPS"])
+    let header = Row::new(vec!["Character", "Damage", "DPS"])
         .style(Style::default().add_modifier(Modifier::BOLD));
 
     let table = Table::new(
         rows,
         [
-            Constraint::Percentage(35),
-            Constraint::Percentage(25),
-            Constraint::Percentage(20),
-            Constraint::Percentage(20),
+            Constraint::Percentage(40),
+            Constraint::Percentage(30),
+            Constraint::Percentage(30),
         ],
     )
     .header(header)
@@ -347,21 +309,75 @@ fn draw_meter(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, parser: &
     frame.render_widget(table, area);
 }
 
-fn draw_log(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, log: &SharedLog) {
-    let lines = log.lines.lock().unwrap();
-    let text = lines
-        .iter()
-        .rev()
-        .take(area.height.saturating_sub(2) as usize)
-        .rev()
-        .cloned()
-        .collect::<Vec<_>>()
-        .join("\n");
+/// Assigns each character a distinct, stable color by spacing them evenly
+/// around the hue wheel in their declaration order — simpler than curating
+/// 30+ colors by hand, and still keeps any given party's rows distinguishable.
+fn character_color(character_type: &CharacterType) -> Color {
+    use CharacterType::*;
 
-    let paragraph = Paragraph::new(text)
-        .block(Block::default().borders(Borders::ALL).title("Injector log"));
+    let index = match character_type {
+        Pl0000 => 0,
+        Pl0100 => 1,
+        Pl0200 => 2,
+        Pl0300 => 3,
+        Pl0400 => 4,
+        Pl0500 => 5,
+        Pl0600 => 6,
+        Pl0700 => 7,
+        Pl0800 => 8,
+        Pl0900 => 9,
+        Pl1000 => 10,
+        Pl1100 => 11,
+        Pl1200 => 12,
+        Pl1300 => 13,
+        Pl1400 => 14,
+        Pl1500 => 15,
+        Pl1600 => 16,
+        Pl1700 => 17,
+        Pl1800 => 18,
+        Pl1900 => 19,
+        Pl2000 => 20,
+        Pl2100 => 21,
+        Pl2200 => 22,
+        Pl2300 => 23,
+        Pl2400 => 24,
+        Pl2500 => 25,
+        Pl2600 => 26,
+        Pl2700 => 27,
+        Pl2800 => 28,
+        Pl2900 => 29,
+        Pl0700Ghost => 30,
+        Pl0700GhostSatellite => 31,
+        Unknown(_) => return Color::Gray,
+    };
 
-    frame.render_widget(paragraph, area);
+    hue_wheel_color(index, 32)
+}
+
+fn hue_wheel_color(index: usize, total: usize) -> Color {
+    let hue = (index as f32 / total as f32) * 360.0;
+    let (r, g, b) = hsv_to_rgb(hue, 0.65, 0.95);
+    Color::Rgb(r, g, b)
+}
+
+fn hsv_to_rgb(hue: f32, saturation: f32, value: f32) -> (u8, u8, u8) {
+    let c = value * saturation;
+    let h_prime = hue / 60.0;
+    let x = c * (1.0 - (h_prime.rem_euclid(2.0) - 1.0).abs());
+    let (r1, g1, b1) = match h_prime as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = value - c;
+    (
+        ((r1 + m) * 255.0).round() as u8,
+        ((g1 + m) * 255.0).round() as u8,
+        ((b1 + m) * 255.0).round() as u8,
+    )
 }
 
 fn draw_status(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, connected: bool) {
@@ -410,7 +426,7 @@ async fn main() -> anyhow::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_ui(&mut terminal, &parser, &connected, &log);
+    let result = run_ui(&mut terminal, &parser, &connected);
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
