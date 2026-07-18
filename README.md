@@ -15,6 +15,8 @@ The upstream Windows GUI is a Tauri app that renders its overlay with the Micros
 
 The original Windows GUI (`src-tauri/` + `src/`) is unchanged and still works normally on native Windows.
 
+![Linux TUI meter](./docs/screenshots/linux-tui-meter.png)
+
 ## Building
 
 A devcontainer (`.devcontainer/`) cross-compiles the Windows pieces (`hook.dll`, `gbfr-logs.exe`, `injector.exe`) from Linux using mingw-w64, so you don't need to install a Windows Rust toolchain:
