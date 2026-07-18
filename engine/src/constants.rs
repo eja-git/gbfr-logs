@@ -72,6 +72,46 @@ pub enum CharacterType {
 }
 
 impl CharacterType {
+    /// Human-readable character name, for frontends without access to the
+    /// React app's i18n translation files (e.g. `src-tauri/lang/en/characters.json`).
+    pub fn friendly_name(&self) -> String {
+        match self {
+            CharacterType::Pl0000 => "Gran".to_string(),
+            CharacterType::Pl0100 => "Djeeta".to_string(),
+            CharacterType::Pl0200 => "Katalina".to_string(),
+            CharacterType::Pl0300 => "Rackam".to_string(),
+            CharacterType::Pl0400 => "Io".to_string(),
+            CharacterType::Pl0500 => "Eugen".to_string(),
+            CharacterType::Pl0600 => "Rosetta".to_string(),
+            CharacterType::Pl0700 => "Ferry".to_string(),
+            CharacterType::Pl0800 => "Lancelot".to_string(),
+            CharacterType::Pl0900 => "Vane".to_string(),
+            CharacterType::Pl1000 => "Percival".to_string(),
+            CharacterType::Pl1100 => "Siegfried".to_string(),
+            CharacterType::Pl1200 => "Charlotta".to_string(),
+            CharacterType::Pl1300 => "Yodarha".to_string(),
+            CharacterType::Pl1400 => "Narmaya".to_string(),
+            CharacterType::Pl1500 => "Ghandagoza".to_string(),
+            CharacterType::Pl1600 => "Zeta".to_string(),
+            CharacterType::Pl1700 => "Vaseraga".to_string(),
+            CharacterType::Pl1800 => "Cagliostro".to_string(),
+            CharacterType::Pl1900 => "Id".to_string(),
+            CharacterType::Pl2000 => "Id (Dragon)".to_string(),
+            CharacterType::Pl2100 => "Sandalphon".to_string(),
+            CharacterType::Pl2200 => "Seofon".to_string(),
+            CharacterType::Pl2300 => "Tweyen".to_string(),
+            CharacterType::Pl2400 => "Gallanza".to_string(),
+            CharacterType::Pl2500 => "Maglielle".to_string(),
+            CharacterType::Pl2600 => "Beatrix".to_string(),
+            CharacterType::Pl2700 => "Eustace".to_string(),
+            CharacterType::Pl2800 => "Fraux".to_string(),
+            CharacterType::Pl2900 => "Fediel".to_string(),
+            CharacterType::Pl0700Ghost => "Ferry (Pet)".to_string(),
+            CharacterType::Pl0700GhostSatellite => "Ferry (Umlauf)".to_string(),
+            CharacterType::Unknown(hash) => format!("Unknown ({hash:#010X})"),
+        }
+    }
+
     pub fn from_hash(hash: u32) -> Self {
         match hash {
             0x26A4848A => CharacterType::Pl0000,

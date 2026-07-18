@@ -1,10 +1,14 @@
 //! Live DPS overlay for Linux/Wine: connects directly to hook.dll over the
 //! same TCP protocol the Tauri GUI uses, without any WebView2/Wine GUI
 //! compositing involved. Launches `injector.exe` inside the game's Proton
-//! prefix via `protontricks-launch` on startup.
+//! prefix on startup, either directly via `wine` (preferred) or via
+//! `protontricks-launch` (fallback, but has been observed to attach to a
+//! separate, unrelated wineserver session rather than the game's live one on
+//! at least Bazzite/CachyOS — see `spawn_injector_protontricks`'s doc comment).
 
 use std::collections::VecDeque;
-use std::io::{self, BufRead, Read};
+use std::fs::{File, OpenOptions};
+use std::io::{self, BufRead, Read, Write};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,28 +30,88 @@ use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, LengthDelimitedCodec};
 
 /// Live GBFR Logs damage meter overlay for Linux/Wine.
+///
+/// Two ways to launch injector.exe inside the game's Wine prefix:
+///
+/// 1. `--wine`/`--wineprefix` (preferred): runs injector.exe directly via the
+///    same wine binary and prefix the game itself uses, so it attaches to the
+///    game's actual live wineserver session. Find these paths from the
+///    running game process itself:
+///
+///        pgrep -f granblue_fantasy_relink.exe
+///        cat /proc/<pid>/environ | tr '\0' '\n' | grep STEAM_COMPAT
+///
+///    --wineprefix is `${STEAM_COMPAT_DATA_PATH}/pfx`. --wine is the `wine`
+///    binary next to the Proton build in STEAM_COMPAT_TOOL_PATHS (e.g.
+///    ".../Proton-CachyOS Latest/files/bin/wine").
+///
+/// 2. `--appid` (fallback): uses `protontricks-launch`. Simpler, but observed
+///    to attach to a separate, unrelated wineserver session rather than the
+///    game's live one in at least one Bazzite/CachyOS setup — if injection
+///    silently never finds the game process, switch to --wine/--wineprefix.
 #[derive(clap::Parser, Debug)]
 #[command(author, version, about)]
 struct Args {
-    /// Steam AppID of Granblue Fantasy Relink, used to find its Proton prefix.
-    #[arg(long)]
-    appid: String,
-
-    /// Path to injector.exe, run inside the game's Proton prefix via protontricks-launch.
+    /// Path to injector.exe, run inside the game's Proton prefix.
     #[arg(long)]
     injector: PathBuf,
+
+    /// Path to the wine binary from the game's own Proton build. Requires --wineprefix.
+    #[arg(long)]
+    wine: Option<PathBuf>,
+
+    /// Path to the game's Wine prefix ("pfx") directory. Requires --wine.
+    #[arg(long)]
+    wineprefix: Option<PathBuf>,
+
+    /// Steam AppID, used with protontricks-launch instead of --wine/--wineprefix.
+    #[arg(long)]
+    appid: Option<String>,
 }
 
 const MAX_LOG_LINES: usize = 200;
+const LOG_FILE_NAME: &str = "tui.log";
 
-type SharedLog = Arc<Mutex<VecDeque<String>>>;
+/// Log lines shown in the on-screen panel, mirrored to `tui.log` in the
+/// working directory. The on-screen panel is hard to copy text out of (it's
+/// drawn in an alternate screen buffer), so the file is the reliable way to
+/// get diagnostics out — `tail -f tui.log` in another terminal, or `cat` it
+/// after quitting.
+struct LogState {
+    lines: Mutex<VecDeque<String>>,
+    file: Mutex<Option<File>>,
+}
+
+type SharedLog = Arc<LogState>;
+
+fn open_log() -> SharedLog {
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(LOG_FILE_NAME)
+        .ok();
+
+    Arc::new(LogState {
+        lines: Mutex::new(VecDeque::new()),
+        file: Mutex::new(file),
+    })
+}
 
 fn push_log(log: &SharedLog, line: String) {
-    let mut log = log.lock().unwrap();
-    if log.len() >= MAX_LOG_LINES {
-        log.pop_front();
+    {
+        let mut lines = log.lines.lock().unwrap();
+        if lines.len() >= MAX_LOG_LINES {
+            lines.pop_front();
+        }
+        lines.push_back(line.clone());
     }
-    log.push_back(line);
+
+    if let Ok(mut file) = log.file.lock() {
+        if let Some(file) = file.as_mut() {
+            let _ = writeln!(file, "{line}");
+            let _ = file.flush();
+        }
+    }
 }
 
 fn read_lines(stream: impl Read, prefix: &'static str, log: SharedLog) {
@@ -57,41 +121,38 @@ fn read_lines(stream: impl Read, prefix: &'static str, log: SharedLog) {
     }
 }
 
-/// Spawns `protontricks-launch --appid <appid> <injector>` in the background,
-/// forwarding its stdout/stderr into `log` so injection failures are visible
-/// in the TUI without needing a separate log file.
-fn spawn_injector(appid: String, injector: PathBuf, log: SharedLog) {
+/// Spawns an already-configured `Command` (stdout/stderr must be piped),
+/// forwarding its output into `log` so injection failures are visible in the
+/// TUI without needing a separate log file. Returns the spawned process's PID
+/// so it can be killed when `tui` exits — otherwise it leaks as an orphan
+/// every time this program quits, which piles up fast across repeated runs.
+fn spawn_and_track(mut command: std::process::Command, log: SharedLog) -> Option<u32> {
+    let mut child = match command.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            push_log(&log, format!("failed to launch injector: {e}"));
+            return None;
+        }
+    };
+
+    let pid = child.id();
+
+    let stdout_handle = child
+        .stdout
+        .take()
+        .map(|s| std::thread::spawn({
+            let log = log.clone();
+            move || read_lines(s, "out", log)
+        }));
+    let stderr_handle = child
+        .stderr
+        .take()
+        .map(|s| std::thread::spawn({
+            let log = log.clone();
+            move || read_lines(s, "err", log)
+        }));
+
     std::thread::spawn(move || {
-        let mut child = match std::process::Command::new("protontricks-launch")
-            .arg("--appid")
-            .arg(&appid)
-            .arg(&injector)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
-            Ok(child) => child,
-            Err(e) => {
-                push_log(&log, format!("failed to launch protontricks-launch: {e}"));
-                return;
-            }
-        };
-
-        let stdout_handle = child
-            .stdout
-            .take()
-            .map(|s| std::thread::spawn({
-                let log = log.clone();
-                move || read_lines(s, "out", log)
-            }));
-        let stderr_handle = child
-            .stderr
-            .take()
-            .map(|s| std::thread::spawn({
-                let log = log.clone();
-                move || read_lines(s, "err", log)
-            }));
-
         let status = child.wait();
 
         if let Some(handle) = stdout_handle {
@@ -106,17 +167,51 @@ fn spawn_injector(appid: String, injector: PathBuf, log: SharedLog) {
             Err(e) => push_log(&log, format!("failed to wait on injector process: {e}")),
         }
     });
+
+    Some(pid)
+}
+
+/// Runs injector.exe directly via the game's own wine binary and prefix, so
+/// it attaches to the game's actual live wineserver session instead of
+/// whatever session protontricks-launch's sandboxing might spin up.
+fn spawn_injector_direct(
+    wine: PathBuf,
+    wineprefix: PathBuf,
+    injector: PathBuf,
+    log: SharedLog,
+) -> Option<u32> {
+    let mut command = std::process::Command::new(wine);
+    command.env("WINEPREFIX", wineprefix).arg(injector);
+    spawn_and_track(command, log)
+}
+
+/// Runs injector.exe via `protontricks-launch --appid <appid> <injector>`.
+///
+/// This has been observed (on at least one Bazzite/CachyOS setup) to attach
+/// to a separate, freshly-spawned wineserver rather than the game's actual
+/// live session — confirmed by `wine tasklist` run the same way showing only
+/// base OS processes, not the game, and by a second `wineserver` process
+/// appearing the moment this runs. If injection silently never finds the
+/// game process, switch to `spawn_injector_direct` instead.
+fn spawn_injector_protontricks(appid: String, injector: PathBuf, log: SharedLog) -> Option<u32> {
+    let mut command = std::process::Command::new("protontricks-launch");
+    command.arg("--appid").arg(&appid).arg(&injector);
+    spawn_and_track(command, log)
 }
 
 /// Connects to the hook's TCP socket and feeds decoded messages into the
 /// shared parser, mirroring `connect_and_run_parser` in the Tauri app but
 /// without any persistence or frontend push (the render loop just reads
 /// `parser`'s state directly on a tick instead).
-async fn run_network_loop(parser: Arc<Mutex<EngineParser>>, connected: Arc<AtomicBool>) {
+async fn run_network_loop(parser: Arc<Mutex<EngineParser>>, connected: Arc<AtomicBool>, log: SharedLog) {
+    let mut logged_waiting = false;
+
     loop {
         match TcpStream::connect(protocol::SOCKET_ADDR).await {
             Ok(stream) => {
                 connected.store(true, Ordering::Relaxed);
+                logged_waiting = false;
+                push_log(&log, format!("connected to hook at {}", protocol::SOCKET_ADDR));
 
                 let decoder = LengthDelimitedCodec::new();
                 let mut reader = FramedRead::new(stream, decoder);
@@ -159,8 +254,16 @@ async fn run_network_loop(parser: Arc<Mutex<EngineParser>>, connected: Arc<Atomi
                 }
 
                 connected.store(false, Ordering::Relaxed);
+                push_log(&log, "hook connection closed, waiting for game...".to_string());
             }
-            Err(_) => {
+            Err(e) => {
+                if !logged_waiting {
+                    push_log(
+                        &log,
+                        format!("waiting for hook at {}: {e}", protocol::SOCKET_ADDR),
+                    );
+                    logged_waiting = true;
+                }
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
         }
@@ -198,33 +301,29 @@ fn run_ui(
 fn draw_meter(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, parser: &Arc<Mutex<EngineParser>>) {
     let parser = parser.lock().unwrap();
 
+    // character_name is an internal field, not meant for display (matching
+    // src/pages/logs/View.tsx's formatPlayerDisplayName, which only ever
+    // shows displayName, falling back to character_type when it's empty —
+    // e.g. offline/solo play, where there's no online display name at all).
     let names: std::collections::HashMap<u32, String> = parser
         .encounter
         .player_data
         .iter()
         .flatten()
-        .map(|p| {
-            let name = if p.display_name.is_empty() {
-                p.character_name.clone()
-            } else {
-                p.display_name.clone()
-            };
-            (p.actor_index, name)
-        })
+        .filter(|p| !p.display_name.is_empty())
+        .map(|p| (p.actor_index, p.display_name.clone()))
         .collect();
 
     let mut players: Vec<_> = parser.derived_state.party.values().collect();
     players.sort_by(|a, b| b.total_damage.cmp(&a.total_damage));
 
     let rows = players.into_iter().map(|player| {
-        let name = names
-            .get(&player.index)
-            .cloned()
-            .unwrap_or_else(|| format!("{:?}", player.character_type));
+        let character_name = player.character_type.friendly_name();
+        let name = names.get(&player.index).cloned().unwrap_or_else(|| character_name.clone());
 
         Row::new(vec![
             Cell::from(name),
-            Cell::from(format!("{:?}", player.character_type)),
+            Cell::from(character_name),
             Cell::from(format!("{}", player.total_damage)),
             Cell::from(format!("{:.0}", player.dps)),
         ])
@@ -249,8 +348,8 @@ fn draw_meter(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, parser: &
 }
 
 fn draw_log(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, log: &SharedLog) {
-    let log = log.lock().unwrap();
-    let text = log
+    let lines = log.lines.lock().unwrap();
+    let text = lines
         .iter()
         .rev()
         .take(area.height.saturating_sub(2) as usize)
@@ -279,13 +378,31 @@ fn draw_status(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, connecte
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    let log: SharedLog = Arc::new(Mutex::new(VecDeque::new()));
-    spawn_injector(args.appid, args.injector, log.clone());
+    let log = open_log();
+    push_log(&log, format!("starting tui, logging to {LOG_FILE_NAME}"));
+
+    let injector_pid = match (args.wine, args.wineprefix, args.appid) {
+        (Some(wine), Some(wineprefix), _) => {
+            push_log(&log, format!("launching injector directly via {wine:?} (prefix {wineprefix:?})"));
+            spawn_injector_direct(wine, wineprefix, args.injector, log.clone())
+        }
+        (_, _, Some(appid)) => {
+            push_log(&log, format!("launching injector via protontricks-launch --appid {appid}"));
+            spawn_injector_protontricks(appid, args.injector, log.clone())
+        }
+        _ => {
+            push_log(
+                &log,
+                "no launch method given: pass either --wine + --wineprefix, or --appid".to_string(),
+            );
+            None
+        }
+    };
 
     let parser = Arc::new(Mutex::new(EngineParser::new(None, None)));
     let connected = Arc::new(AtomicBool::new(false));
 
-    tokio::spawn(run_network_loop(parser.clone(), connected.clone()));
+    tokio::spawn(run_network_loop(parser.clone(), connected.clone(), log.clone()));
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -298,6 +415,15 @@ async fn main() -> anyhow::Result<()> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
+
+    // Best-effort: kill the protontricks-launch process we spawned so it
+    // doesn't leak as an orphan. See spawn_injector's doc comment for why
+    // this can't reach the deeper injector.exe process too.
+    if let Some(pid) = injector_pid {
+        let _ = std::process::Command::new("kill")
+            .arg(pid.to_string())
+            .status();
+    }
 
     result
 }
