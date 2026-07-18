@@ -8,7 +8,4 @@ edition = "2021"
 # inject hook.dll — no GUI, so it's immune to the Wine/DirectComposition
 # crash that blocks the Tauri GUI.
 [dependencies]
-anyhow = "1.0"
 dll-syringe = "0.15.2"
-env_logger = "0.11"
-log = "^0.4"
