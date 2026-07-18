@@ -1,0 +1,18 @@
+[package]
+name = "tui"
+version = "0.1.0"
+edition = "2021"
+
+# Native Linux binary: a live DPS overlay that talks to hook.dll directly over
+# TCP, with no Tauri/WebView2/Wine involvement on this side at all.
+[dependencies]
+anyhow = "1.0"
+chrono = "0.4"
+clap = { version = "=4.5.4", features = ["derive"] }
+crossterm = "0.27"
+engine = { path = "../engine" }
+protocol = { path = "../protocol" }
+ratatui = "0.26"
+tokio = { version = "1.0", features = ["full"] }
+tokio-stream = "0.1.15"
+tokio-util = { version = "0.7.11", features = ["codec"] }
