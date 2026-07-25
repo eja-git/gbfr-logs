@@ -269,8 +269,10 @@ fn run_ui(
 
         if event::poll(Duration::from_millis(250))? {
             if let Event::Key(key) = event::read()? {
-                if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
-                    return Ok(());
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                    KeyCode::Char('r') => parser.lock().unwrap().manual_reset(),
+                    _ => {}
                 }
             }
         }
@@ -286,13 +288,13 @@ fn draw_meter(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, parser: &
     let rows = players.into_iter().map(|player| {
         Row::new(vec![
             Cell::from(player.character_type.friendly_name()),
-            Cell::from(format!("{}", player.total_damage)),
-            Cell::from(format!("{:.0}", player.dps)),
+            Cell::from(humanize_number(player.total_damage as f64)),
+            Cell::from(humanize_number(player.dps)),
         ])
         .style(Style::default().fg(character_color(&player.character_type)))
     });
 
-    let header = Row::new(vec!["Character", "Damage", "DPS"])
+    let header = Row::new(vec!["Character", "Damage", "DPS (dmg/s)"])
         .style(Style::default().add_modifier(Modifier::BOLD));
 
     let table = Table::new(
@@ -307,6 +309,20 @@ fn draw_meter(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, parser: &
     .block(Block::default().borders(Borders::ALL).title("GBFR Logs — Meter"));
 
     frame.render_widget(table, area);
+}
+
+/// Formats large numbers with a K/M/B unit suffix so damage and DPS columns
+/// stay readable instead of running into the millions.
+fn humanize_number(value: f64) -> String {
+    const UNITS: [(f64, &str); 3] = [(1_000_000_000.0, "B"), (1_000_000.0, "M"), (1_000.0, "K")];
+
+    for (threshold, suffix) in UNITS {
+        if value.abs() >= threshold {
+            return format!("{:.2}{suffix}", value / threshold);
+        }
+    }
+
+    format!("{value:.0}")
 }
 
 /// Assigns each character a distinct, stable color by spacing them evenly
@@ -354,8 +370,15 @@ fn character_color(character_type: &CharacterType) -> Color {
     hue_wheel_color(index, 32)
 }
 
+/// Spreads declaration-order-adjacent characters apart on the hue wheel
+/// instead of placing them next to each other, where they'd be nearly
+/// indistinguishable (e.g. Eustace and Fraux at indices 27/28 of 32).
+/// 7 is coprime with 32, so `index * 7 mod 32` visits every slot while
+/// keeping consecutive indices far apart in hue.
 fn hue_wheel_color(index: usize, total: usize) -> Color {
-    let hue = (index as f32 / total as f32) * 360.0;
+    let step = 7;
+    let spread_index = (index * step) % total;
+    let hue = (spread_index as f32 / total as f32) * 360.0;
     let (r, g, b) = hsv_to_rgb(hue, 0.65, 0.95);
     Color::Rgb(r, g, b)
 }
@@ -382,9 +405,9 @@ fn hsv_to_rgb(hue: f32, saturation: f32, value: f32) -> (u8, u8, u8) {
 
 fn draw_status(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, connected: bool) {
     let status = if connected {
-        "Connected to game — press q to quit"
+        "Connected to game — r: reset meter, q: quit"
     } else {
-        "Waiting for game... — press q to quit"
+        "Waiting for game... — r: reset meter, q: quit"
     };
 
     frame.render_widget(Paragraph::new(status), area);

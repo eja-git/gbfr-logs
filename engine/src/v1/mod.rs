@@ -952,6 +952,18 @@ impl Parser {
         self.derived_state = Default::default();
     }
 
+    /// Clears the current encounter on demand, for frontends that let the
+    /// user manually reset the meter (e.g. a keybinding) rather than relying
+    /// solely on `AreaEnterEvent`/`QuestCompleteEvent` to detect a new fight —
+    /// some game modes don't emit those, so the meter never auto-resets.
+    /// Unlike `on_area_enter_event`, this never saves the current encounter
+    /// to the database first; the meter is just cleared.
+    pub fn manual_reset(&mut self) {
+        self.encounter = Default::default();
+        self.update_status(ParserStatus::Waiting);
+        self.reset();
+    }
+
     fn update_status(&mut self, new_status: ParserStatus) {
         self.status = new_status;
         self.derived_state.status = new_status;
